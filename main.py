@@ -106,6 +106,8 @@ class TestAppium(unittest.TestCase):
     resolutionX = 0
     resolutionY = 0
     img: ImageTapper | None = None  # >>>
+    # ROI hasil Appium Inspector (di resolusi dasar kamu pas ngasih “kotak biru”)
+    ROI_BIRU_BASE = (375, 165, 865, 475)  # ganti dengan angkamu
     
     def setUp(self) -> None:
         self.driver = webdriver.Remote(appium_server_url, options=UiAutomator2Options().load_capabilities(capabilities))
@@ -216,20 +218,95 @@ class TestAppium(unittest.TestCase):
             else:
                 raise ValueError(f"Aksi tidak dikenal: {action}")
 
-    def tap_tukar(self):
+    def tap_image(self, image_name: str = "tukar"):
         """
         Coba klik tombol 'Tukar' via template 'tukar.png'.
         Jika gagal, fallback ke koordinat ter-skala ('tukar_icon').
         """
         ok, score, center = False, 0.0, None
         if self.img:
-            ok, score, center = self.img.tap_image("tukar", retries=3, delay=0.5)
-            print(f"[TUKAR] image-tap ok={ok} score={score:.3f} center={center}")
+            ok, score, center = self.img.tap_image(image_name, retries=3, delay=0.5)
+            print(f"[TUKAR] image-tap = {image_name} ok={ok} score={score:.3f} center={center}")
 
         if not ok:
             # fallback (agar tetap jalan meski template miss)
             print(f"[TUKAR] fallback ke koordinat karena score={score:.3f}")
             self.tap("tukar_icon")
+
+    def detect_popup(self, popup_name: str = "popup_password"):
+        """
+        Deteksi popup berdasarkan template.
+        Return dict:
+            {
+                "found": True/False,
+                "name": popup_name,
+                "score": float,
+                "rect": ((x1,y1),(x2,y2)),
+                "center": (cx,cy)
+            }
+        """
+
+        if not self.img:
+            return {"found": False, "name": popup_name, "score": 0.0, "rect": None, "center": None}
+
+        res = self.img.find(popup_name)
+        
+        return {
+            "found": res.get("ok", False),
+            "name": popup_name,
+            "score": res.get("score", 0.0),
+            "rect": res.get("rect"),
+            "center": res.get("center"),
+    }
+
+    def find_user(self, is_use_ocr: bool = False, save_debug: bool = False) -> str | None:
+        """
+        Cari user:
+        - Jika is_use_ocr=True: cek apakah ID target sudah tampil → langsung TUKAR.
+        - Jika belum, lakukan input + CARI, lalu klik TUKAR.
+        Return: ID yang terdeteksi (pre/post) atau None.
+        """
+        global user_id_global
+        delay = 1.5
+        user_id = user_id_global if user_id_global else "123456789"
+
+        found_id: str | None = None
+
+        # ---- MODE OCR (cepat, skip input bila sudah ada) ----
+        if is_use_ocr and self.img:
+            # PHASE A: cek dulu ROI pixel (kotak biru)
+            pre_id = self.img.read_user_id_pixels(self.ROI_BIRU_BASE, save_debug=save_debug)
+            print(f"[OCR] pre_id={pre_id} target={user_id}")
+
+            if pre_id == user_id:
+                # langsung klik TUKAR (pakai wrapper yang sudah ada)
+                self.tap_image("tombol_tukar")
+                self.wait(delay)
+                return pre_id  # sudah selesai
+            # else: lanjut ke fase input + cari
+
+        # ---- PHASE B: INPUT + CARI (jalankan juga jika OCR dimatikan) ----
+        # fokus kolom, ketik, enter
+        self.tap("input_id_teman")
+        self.type_text_via_keycode(user_id)
+        self.enter()
+        self.wait(delay)
+
+        self.tap("tombol_cari")
+        self.wait(delay)
+
+        # Baca lagi dengan OCR (pakai chain yang lebih robust)
+        if is_use_ocr and self.img:
+            post_id = self.img.read_user_id() if self.img else None
+            print(f"[OCR] post_id={post_id}")
+
+        # klik tombol tukar di baris hasil
+        self.tap("tombol_tukar")
+        self.wait(delay)
+
+        return found_id
+
+            
 
     def test_find_target(self) -> None:
         global automation_running
@@ -241,51 +318,30 @@ class TestAppium(unittest.TestCase):
 
         while automation_running:
             delay = 1.5
-            steps = [
-                ("tap_tukar", None),
-                ("wait",  delay),
 
-                # ✅ Verifikasi produk di dialog (pakai screenshot + template matching)
-                ("verify", produk_expected),
+            # 1) Buka dialog & verifikasi produk
+            self.tap_image(); self.wait(delay)
+            ok, score, center = self._verify_product(produk_expected)
+            if not ok:
+                self.change_card(produk_expected)
 
-                ("tap",   "input_id_teman"),
-                ("type",  user_id),
-                ("enter", None),
-                ("wait",  delay),
+            # 2) Cari user & tukar
+            self.find_user(is_use_ocr=True, save_debug=False)
 
-                ("tap",   "tombol_cari"),
-                ("wait",  delay),
+            # 3) Input sandi & tentukan
+            popup = self.detect_popup("popup_password")
+            if popup["found"]:
+                print(f"[POPUP] Detected: {popup['name']} score={popup['score']:.3f}")
+                # lakukan step password
+                print("[POPUP] Detected password popup")
+                self.tap("input_sandi")
+                self.type_text_via_keycode("10sama")
+                self.enter(); self.wait(delay)
 
-                ("tap",   "tombol_tukar"),
-                ("wait",  delay),
-
-                ("tap",   "input_sandi"),
-                ("type",  "10sama"),
-                ("enter", None),
-                ("wait",  delay),
-
-                ("tap",   "tombol_tentukan"),
-                ("wait",  delay),
-            ]
-
-            for action, value in steps:
-                if action == "tap":
-                    self.tap(value)
-                elif action == "tap_tukar":                 # >>>
-                    self.tap_tukar()
-                elif action == "type":
-                    self.type_text_via_keycode(value)
-                elif action == "enter":
-                    self.enter()
-                elif action == "wait":
-                    self.wait(value)
-                elif action == "verify":
-                    ok, score, center = self._verify_product(value)
-                    if not ok:
-                        # Kalau tidak cocok, kamu bisa: break / continue / raise
-                        self.change_card(value)
-                else:
-                    raise ValueError(f"Aksi tidak dikenal: {action}")
+                self.tap("tombol_tentukan")
+                self.wait(delay)
+            else:
+                print(f"[POPUP] No {popup['name']} detected")
 
             self.assertTrue(True)
             automation_running = False

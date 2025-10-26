@@ -1,10 +1,6 @@
 # vision.py
 import re
-try:
-    import easyocr
-    _reader = easyocr.Reader(['en'])
-except Exception:
-    _reader = None
+import easyocr
 import io, os, time
 import cv2
 import numpy as np
@@ -12,6 +8,8 @@ from PIL import Image
 
 DEFAULT_SCALES = np.linspace(0.7, 1.3, 21)  # multi-scale biar tahan beda DPI
 DEFAULT_THRESHOLD = 0.85
+
+_reader = easyocr.Reader(['en'])
 
 class ImageTapper:
     """
@@ -141,3 +139,126 @@ class ImageTapper:
         # fallback: ambil angka terpanjang
         nums = re.findall(r'[0-9]{6,}', text_all)
         return max(nums, key=len) if nums else None
+
+    def read_user_id_near_tukar(self, tukar_template="tombol_tukar"):
+        """
+        Temukan tombol TUKAR via self.find(), lalu OCR area di kiri tombol pada baris yang sama.
+        tukar_template: boleh nama template tanpa .png (disimpan di template_dir) atau path lengkap.
+        Return: string angka ID atau None.
+        """
+        if _reader is None:
+            return None
+
+        img = self._screenshot_bgr()
+
+        # Pakai util yang sudah ada:
+        res = self.find(tukar_template)  # akan baca template dari template_dir bila nama saja
+        rect = res.get("rect")           # rect = ((x1,y1),(x2,y2))
+        if not rect:
+            # fallback ke ROI persentase kalau tombol tak ketemu sama sekali
+            return self.read_user_id()
+
+        (x1, y1), (x2, y2) = rect  # posisi tombol TUKAR
+        h, w = img.shape[:2]
+
+        # Ambil strip horizontal setinggi tombol, agak ditambah padding atas-bawah
+        pad_y_top = int(0.15 * (y2 - y1))
+        pad_y_bot = int(0.20 * (y2 - y1))
+        band_y1 = max(0, y1 - pad_y_top)
+        band_y2 = min(h, y2 + pad_y_bot)
+
+        # Melebar cukup jauh ke kiri untuk menangkap "ID: 2194..." dan nama
+        left_margin = max(0, x1 - int(0.48 * w))  # ~ setengah layar ke kiri
+        roi = img[band_y1:band_y2, left_margin:x1]
+
+        # ----- preprocessing OCR -----
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        gray = cv2.bilateralFilter(gray, 7, 50, 50)
+        scale = 1.6
+        up = cv2.resize(gray, (int(gray.shape[1]*scale), int(gray.shape[0]*scale)))
+        th = cv2.adaptiveThreshold(up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                cv2.THRESH_BINARY, 31, 5)
+
+        results = _reader.readtext(th)
+        text_all = " ".join([t for _, t, _ in results]) if results else ""
+
+        m = re.search(r'\bID[:\s]*([0-9]{5,})\b', text_all, flags=re.I)
+        if m:
+            return m.group(1)
+
+        nums = re.findall(r'[0-9]{6,}', text_all)
+        return max(nums, key=len) if nums else None
+
+    def read_user_id_pixels(self, roi_px, save_debug=False):
+        """
+        OCR 'ID: xxxxx' dari ROI pixel absolut.
+        roi_px: (x1, y1, x2, y2) pada full screenshot.
+        Selalu simpan debug ROI kalau save_debug=True, bahkan jika EasyOCR belum siap.
+        """
+        import os, cv2, re, numpy as np
+
+        # --- Lokasi folder debug (pasti ada) ---
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DEBUG_DIR = os.path.join(BASE_DIR, "debug")
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+
+        # --- Ambil screenshot & crop ROI ---
+        img = self._screenshot_bgr()
+        x1, y1, x2, y2 = map(int, roi_px)
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(img.shape[1], x2); y2 = min(img.shape[0], y2)
+        roi = img[y1:y2, x1:x2]
+
+        # --- Simpan RAW ROI dulu untuk verifikasi area ---
+        if save_debug:
+            raw_path = os.path.join(DEBUG_DIR, "debug_roi_pixels_raw.png")
+            cv2.imwrite(raw_path, roi)
+            print("[DEBUG] ROI raw saved to:", raw_path, flush=True)
+
+        # --- Preprocess untuk OCR ---
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        gray = cv2.bilateralFilter(gray, 7, 50, 50)
+        scale = 1.8
+        up = cv2.resize(gray, (int(gray.shape[1]*scale), int(gray.shape[0]*scale)))
+        th = cv2.adaptiveThreshold(up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                cv2.THRESH_BINARY, 31, 5)
+
+        if save_debug:
+            proc_path = os.path.join(DEBUG_DIR, "debug_roi_pixels_proc.png")
+            cv2.imwrite(proc_path, th)
+            print("[DEBUG] ROI proc saved to:", proc_path, flush=True)
+            print("[DEBUG] CWD is:", os.getcwd(), flush=True)
+
+        # --- Kalau OCR engine belum siap, keluar sekarang ---
+        if _reader is None:
+            print("[DEBUG] EasyOCR not initialized (_reader is None). Install 'easyocr'?", flush=True)
+            return None
+
+        # --- OCR ---
+        results = _reader.readtext(th)
+        text_all = " ".join([t for _, t, _ in results]) if results else ""
+        m = re.search(r'\bID[:\s]*([0-9]{5,})\b', text_all, flags=re.I)
+        if m:
+            return m.group(1)
+
+        nums = re.findall(r'[0-9]{6,}', text_all)
+        return max(nums, key=len) if nums else None
+
+    
+    def scale_roi_from_base(self, base_w, base_h, roi_px_base):
+        """
+        Mengubah ROI pixel dari resolusi dasar (base_w x base_h) ke resolusi
+        screenshot saat ini.
+        """
+        img = self._screenshot_bgr()
+        cur_h, cur_w = img.shape[:2]
+
+        x1, y1, x2, y2 = roi_px_base
+        sx = cur_w / float(base_w)
+        sy = cur_h / float(base_h)
+
+        return (int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy))
