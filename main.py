@@ -205,12 +205,16 @@ class TestAppium(unittest.TestCase):
         self.wait(delay)
 
         # Step 2: urutkan langkah tukar kartu
-        self.tap_image("choose_card_" + produk.lower())
+        ganti_kartu = self.tap_image("choose_card_" + produk.lower())
         self.wait(delay)
-
-        # Step 3: konfirmasi tukar kartu
-        self.tap_image("btn_confirm_card")
-        self.wait(delay)
+        if not ganti_kartu:
+            print(f"[CHANGE CARDS] Gagal pilih kartu: {produk}")
+            self.tap_image("btn_close")  # tutup dulu popup kalau ada
+            return
+        else:
+            return True
+        
+        
 
 
     def tap_image(self, image_name: str = "tukar"):
@@ -224,9 +228,10 @@ class TestAppium(unittest.TestCase):
             print(f"[TUKAR] image-tap = {image_name} ok={ok} score={score:.3f} center={center}")
 
         if not ok:
-            # fallback (agar tetap jalan meski template miss)
             print(f"[TUKAR] fallback ke koordinat karena score={score:.3f}")
-            self.tap("tukar_icon")
+            return
+        else:
+            return True
 
     def detect_popup(self, popup_name: str = "popup_password"):
         """
@@ -301,6 +306,11 @@ class TestAppium(unittest.TestCase):
 
         return found_id
 
+    def restart_app(self):
+        self.driver.terminate_app("com.neptune.domino")
+        self.driver.activate_app("com.neptune.domino")
+        self.wait(5.0)
+
     def test_find_target(self) -> None:
         global automation_running
         global user_id_global
@@ -318,18 +328,31 @@ class TestAppium(unittest.TestCase):
             popup = self.detect_popup("popup_sesi_habis")
             if popup["found"]:
                 print("[INFO] Sesi habis → Restarting app ...")
-                self.driver.terminate_app("com.neptune.domino")
-                self.driver.activate_app("com.neptune.domino")
+                self.restart_app()
                 continue  # ulangi dari awal
 
             ok, score, center = self._verify_product(produk_expected)
             if not ok:
-                self.change_card(produk_expected)
+                is_changed = self.change_card(produk_expected)
+                if not is_changed:
+                    print("[INFO] Gagal ganti kartu → ulangi dari awal ...")
+                    self.tap_image("btn_close")  # tutup dulu popup kalau ada
+                    break  # ulangi dari awal
 
-            # 2) Cari user & tukar
+            # Step 3: konfirmasi tukar kartu
+            self.tap_image("btn_confirm_card")
+            self.wait(delay)
+
+            # 4) Cari user & tukar
             self.find_user(is_use_ocr=True, save_debug=False)
 
-            # 3) Input sandi & tentukan
+            popup = self.detect_popup("popup_sesi_habis")
+            if popup["found"]:
+                print("[INFO] Sesi habis → Restarting app ...")
+                self.restart_app()
+                continue  # ulangi dari awal
+
+            # 5) Input sandi & tentukan
             popup = self.detect_popup("popup_password")
             if popup["found"]:
                 print(f"[POPUP] Detected: {popup['name']} score={popup['score']:.3f}")
@@ -343,6 +366,14 @@ class TestAppium(unittest.TestCase):
                 self.wait(delay)
             else:
                 print(f"[POPUP] No {popup['name']} detected")
+
+            # 6) Konfirmasi tentukan kartu
+            self.tap_image("btn_confirm_card")
+            self.wait(delay)
+
+            # Selesai satu siklus
+            self.tap_image("btn_close")
+            self.wait(delay)
 
             self.assertTrue(True)
             automation_running = False
