@@ -199,24 +199,19 @@ class TestAppium(unittest.TestCase):
     def change_card(self, produk: str):
         print(f"[CHANGE CARDS] Ganti kartu ke produk: {produk}")
         delay = 1.5
-        steps = [
-            ("tap",   "tukar_kartu"),
-            ("wait",  delay),
-
-            ("tap",   produk),
-            ("wait",  delay),
-
-            ("tap",   "tentukan_kartu"),
-            ("wait",  delay),
-        ]
         
-        for action, value in steps:
-            if action == "tap":
-                self.tap(value)
-            elif action == "wait":
-                self.wait(value)
-            else:
-                raise ValueError(f"Aksi tidak dikenal: {action}")
+        # Step 1: buka dialog tukar kartu
+        self.tap_image("btn_change_card")
+        self.wait(delay)
+
+        # Step 2: urutkan langkah tukar kartu
+        self.tap_image("choose_card_" + produk.lower())
+        self.wait(delay)
+
+        # Step 3: konfirmasi tukar kartu
+        self.tap_image("btn_confirm_card")
+        self.wait(delay)
+
 
     def tap_image(self, image_name: str = "tukar"):
         """
@@ -306,8 +301,6 @@ class TestAppium(unittest.TestCase):
 
         return found_id
 
-            
-
     def test_find_target(self) -> None:
         global automation_running
         global user_id_global
@@ -321,6 +314,14 @@ class TestAppium(unittest.TestCase):
 
             # 1) Buka dialog & verifikasi produk
             self.tap_image(); self.wait(delay)
+
+            popup = self.detect_popup("popup_sesi_habis")
+            if popup["found"]:
+                print("[INFO] Sesi habis → Restarting app ...")
+                self.driver.terminate_app("com.neptune.domino")
+                self.driver.activate_app("com.neptune.domino")
+                continue  # ulangi dari awal
+
             ok, score, center = self._verify_product(produk_expected)
             if not ok:
                 self.change_card(produk_expected)
