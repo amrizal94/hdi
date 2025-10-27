@@ -2,6 +2,11 @@ automation_running = False
 user_id_global = ""
 produk_global = ""
 
+# === GLOBALS untuk callback ===
+chat_id_global = ""
+callback_url_global = ""
+callback_token_global = ""
+
 import unittest
 import requests
 from appium import webdriver
@@ -214,9 +219,6 @@ class TestAppium(unittest.TestCase):
         else:
             return True
         
-        
-
-
     def tap_image(self, image_name: str = "tukar"):
         """
         Coba klik tombol 'Tukar' via template 'tukar.png'.
@@ -270,8 +272,6 @@ class TestAppium(unittest.TestCase):
         delay = 1.5
         user_id = user_id_global if user_id_global else "123456789"
 
-        found_id: str | None = None
-
         # ---- MODE OCR (cepat, skip input bila sudah ada) ----
         if is_use_ocr and self.img:
             # PHASE A: cek dulu ROI pixel (kotak biru)
@@ -294,28 +294,62 @@ class TestAppium(unittest.TestCase):
 
         self.tap("tombol_cari")
         self.wait(delay)
-
-        # Baca lagi dengan OCR (pakai chain yang lebih robust)
-        if is_use_ocr and self.img:
-            post_id = self.img.read_user_id() if self.img else None
-            print(f"[OCR] post_id={post_id}")
+        is_founded = self.tap_image("tombol_tukar")
+        if is_founded:
+            return "found"
 
         # klik tombol tukar di baris hasil
         self.tap("tombol_tukar")
         self.wait(delay)
 
-        return found_id
-
     def restart_app(self):
         self.driver.terminate_app("com.neptune.domino")
         self.driver.activate_app("com.neptune.domino")
-        self.wait(5.0)
+        self.send_callback(
+                        status="status",
+                        message=f"ℹ️ bentar ya lagi diproses, id: {user_id_global} produk: {produk_global}",
+                    )
+
+    def wait_lobby_by_image(self, template: str = "tukar") -> bool:
+        delay = 1.5
+        for attempt in range(3):
+            print(f"[INFO] Membuka dialog tukar kartu (attempt {attempt+1}/3) ...")
+            ok = self.tap_image(); self.wait(delay)
+            if ok:
+                return True
+        return
+
+    def send_callback(self, status: str, message: str, reason: str | None = None):
+        """Kirim callback ke bot WA bila callback_url tersedia."""
+        global chat_id_global
+        global callback_url_global
+        global callback_token_global
+        global user_id_global
+        global produk_global
+        
+        try:
+            if not callback_url_global:
+                return
+            payload = {
+                "chatId": chat_id_global or None,
+                "status": status,            # 'succeeded' | 'failed' | 'progress'
+                "message": message,
+                "userId": user_id_global,
+                "produk": produk_global,
+            }
+            if reason:
+                payload["reason"] = reason
+            if callback_token_global:
+                payload["token"] = callback_token_global
+
+            requests.post(callback_url_global, json=payload, timeout=10)
+        except Exception as e:
+            print("[Callback] gagal kirim:", e)
 
     def test_find_target(self) -> None:
         global automation_running
-        global user_id_global
         global produk_global
-        user_id = user_id_global if user_id_global else "123456789"
+        global user_id_global
         produk_expected = produk_global if produk_global else "zeus"
         automation_running = True
 
@@ -323,7 +357,11 @@ class TestAppium(unittest.TestCase):
             delay = 1.5
 
             # 1) Buka dialog & verifikasi produk
-            self.tap_image(); self.wait(delay)
+            lobby_ok = self.wait_lobby_by_image()
+            if not lobby_ok:
+                print("[ERROR] Gagal buka dialog tukar kartu di lobby → ulangi dari awal ...")
+                self.restart_app()
+                continue  # ulangi dari awal
 
             popup = self.detect_popup("popup_sesi_habis")
             if popup["found"]:
@@ -337,6 +375,11 @@ class TestAppium(unittest.TestCase):
                 if not is_changed:
                     print("[INFO] Gagal ganti kartu → ulangi dari awal ...")
                     self.tap_image("btn_close")  # tutup dulu popup kalau ada
+                    self.send_callback(
+                        status="failed",
+                        message=f"❌ Gagal: proses id: {user_id_global} produk: {produk_expected}",
+                        reason="product out of stock"
+                    )
                     break  # ulangi dari awal
 
             # Step 3: konfirmasi tukar kartu
@@ -344,7 +387,15 @@ class TestAppium(unittest.TestCase):
             self.wait(delay)
 
             # 4) Cari user & tukar
-            self.find_user(is_use_ocr=True, save_debug=False)
+            if self.find_user(is_use_ocr=False, save_debug=False) is None:
+                print("[INFO] Gagal temukan user → ulangi dari awal ...")
+                self.tap_image("btn_close")  # tutup dulu popup kalau ada
+                self.send_callback(
+                    status="failed",
+                    message=f"❌ Gagal: proses id: {user_id_global} produk: {produk_expected}",
+                    reason="user not found"
+                )
+                break  # ulangi dari awal
 
             popup = self.detect_popup("popup_sesi_habis")
             if popup["found"]:
@@ -375,6 +426,10 @@ class TestAppium(unittest.TestCase):
             self.tap_image("btn_close")
             self.wait(delay)
 
+            self.send_callback(
+                status="succeeded",
+                message=f"✅ Sukses: proses id: {user_id_global} produk: {produk_expected}"
+            )
             self.assertTrue(True)
             automation_running = False
 

@@ -20,7 +20,10 @@ def run_automation():
         main.automation_running = False
 
 @app.get("/api/kirim")
-async def kirim(userid: str, produk: str):
+async def kirim(userid: str, produk: str,
+                chatId: str | None = None,
+                callback_url: str | None = None,
+                token: str | None = None):
     if main.automation_running:
         return {"status": False, "message": "Automation masih berjalan, mohon tunggu..."}
     
@@ -30,6 +33,9 @@ async def kirim(userid: str, produk: str):
 
     main.user_id_global = userid
     main.produk_global = produk
+    main.chat_id_global = chatId if chatId else ""
+    main.callback_url_global = callback_url if callback_url else ""
+    main.callback_token_global = token if token else "supersecret"
     threading.Thread(target=run_automation, daemon=True).start()
     return {"status": True, "message": f"Automation dimulai untuk user {userid} produk {produk}"}
 
